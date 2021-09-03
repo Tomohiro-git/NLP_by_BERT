@@ -66,7 +66,7 @@ docs
 # %%
 soup.find_all('article')
 # %%
-docs = []
+entities = []
 
 for elem in soup.find_all("articles"):
     texts = []
