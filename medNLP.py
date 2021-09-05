@@ -30,15 +30,17 @@ def entities_from_xml(file_name):
                 pos1 = pos2
                 text_list.append(text)
             articles.append("".join(text_list))
-            entities.append(entities_article)
-        print(entities)   
-    return
+            entities.append(entities_article) 
+    return articles, entities
     #return {'text':article.string, 'entities':entities}
 
     
 # %%
-entities_from_xml('MedTxt-CR-JA-training.xml')
+articles = entities_from_xml('MedTxt-CR-JA-training.xml')[0]
+entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
 
+# %%
+articles[0]
 # %%
 import codecs
 from bs4 import BeautifulSoup
