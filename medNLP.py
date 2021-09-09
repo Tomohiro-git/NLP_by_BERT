@@ -1,5 +1,17 @@
 
 # %%
+#import os
+#os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+
+# %%
+import transformers
+
+print(transformers.__version__)
+import pytorch_lightning as pl
+print(pl.__version__)
+
+# %%
 import codecs
 from bs4 import BeautifulSoup
 with codecs.open("MedTxt-CR-JA-training.xml", "r", "utf-8") as file:
@@ -28,11 +40,11 @@ def entities_from_xml(file_name):
             pos2 = 0
             for child in elem:#取り出した要素に対して，一つずつ処理する
                 #（タグのないものについても要素として取得されるので，位置(pos)はずれない）
-                text = child.string
-
-                pos2 += len(child.string)
+                text = unicodedata.normalize('NFKC', child.string)#正規化
+                text = text.replace('。', '.')
+                pos2 += len(text)
                 if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
-                    entities_article.append({'name':child.string, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
+                    entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
                 pos1 = pos2
                 text_list.append(text)
             articles.append("".join(text_list))
@@ -40,13 +52,91 @@ def entities_from_xml(file_name):
     return articles, entities
     #return {'text':article.string, 'entities':entities}
 
-    
+# %%
+"""
+import codecs
+from bs4 import BeautifulSoup
+with codecs.open('MedTxt-CR-JA-training.xml', "r", "utf-8") as file:
+    soup = BeautifulSoup(file, "html.parser")
+
+
+
+for elem_articles in soup.find_all("articles"):#articles内のarticleを一つずつ取り出す
+    entities = []
+    articles = []
+    for elem in elem_articles.find_all('article'):#article内の要素を一つずつ取り出す
+        entities_article = []
+        text_list = []
+        pos1 = 0
+        pos2 = 0
+        for child in elem:#取り出した要素に対して，一つずつ処理する
+            #（タグのないものについても要素として取得されるので，位置(pos)はずれない）
+            text = child.string
+            pos2 += len(child.string)
+            if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
+                entities_article.append({'name':child.string, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
+            pos1 = pos2
+            text_list.append(text)
+        articles.append("".join(text_list))
+        entities.append(entities_article) 
+"""
+# %%
+print(re.split(r'.\n', articles[-1]))
+
 # %%
 articles = entities_from_xml('MedTxt-CR-JA-training.xml')[0]
 entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
 
 # %%
-entities[0]
+import re
+sentences = []
+for s in articles:
+    sentences.append(re.split(r'.\n', s))
+
+
+# %%
+
+#len(re.split('[．。]', articles[0])[0])+2
+articles[-1]
+# %%
+# 文単位にばらす
+
+texts_dataset = []
+entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
+for i in range(len(sentences)):
+    pos = 0
+    text_dataset = []
+    for k in range(len(sentences[i])):
+        text_dataset.append({'text': sentences[i][k]})#テキスト追加
+        tmp_entities = []
+        while entities[i][0]['span'][1] < len(sentences[i][k]) + pos:#終了位置が超えていたら，次の文へ
+            entities[i][0]['span'] = [entities[i][0]['span'][0] - pos,\
+                entities[i][0]['span'][1] - pos]
+            tmp_entities.append(entities[i][0])
+            del entities[i][0]
+            if not entities[i]:#entitiyがなくなったら終わり
+                break
+        text_dataset[k].update({'entities': tmp_entities})
+        
+        if not entities[i]:#entitiyがなくなったら終わり
+            break
+        pos += len(sentences[i][k])+2#'.'でスプリットしている場合は+1, 。でスプリットしてたら+2?
+    print(text_dataset)
+    texts_dataset.append(text_dataset)
+
+# %%
+texts_dataset
+# %%
+# ネストをはずす
+dataset_t = []
+for i in texts_dataset:
+    dataset_t.extend(i)
+
+dataset_t
+
+# %%
+dataset = dataset_t
+
 # %%
 dataset = []
 for i in range(len(articles)):
@@ -71,8 +161,50 @@ import pytorch_lightning as pl
 # 日本語学習済みモデル
 MODEL_NAME = 'cl-tohoku/bert-base-japanese-whole-word-masking'
 
+
 # %%
-# 8-5
+# 8-16
+# PyTorch Lightningのモデル
+class BertForTokenClassification_pl(pl.LightningModule):
+        
+    def __init__(self, model_name, num_labels, lr):
+        super().__init__()
+        self.save_hyperparameters()
+        self.bert_tc = BertForTokenClassification.from_pretrained(
+            model_name,
+            num_labels=num_labels
+        )
+        
+    def training_step(self, batch, batch_idx):
+        output = self.bert_tc(**batch)
+        loss = output.loss
+        self.log('train_loss', loss)
+        return loss
+        
+    def validation_step(self, batch, batch_idx):
+        output = self.bert_tc(**batch)
+        val_loss = output.loss
+        self.log('val_loss', val_loss)
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+
+checkpoint = pl.callbacks.ModelCheckpoint(
+    monitor='val_loss',
+    mode='min',
+    save_top_k=1,
+    save_weights_only=True,
+    dirpath='model/'
+)
+
+trainer = pl.Trainer(
+    gpus=1,
+    max_epochs=5,
+    callbacks=[checkpoint]
+)
+
+
+# %%
 # 8-21
 class NER_tokenizer_BIO(BertJapaneseTokenizer):
 
@@ -261,24 +393,17 @@ class NER_tokenizer_BIO(BertJapaneseTokenizer):
                 
         return entities
 
+# %% check
+for sample in dataset:
+    text = sample['text']
+    entities = sample['entities']
+
+
 # %%
 tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags))
 
-# %%
-text = '昨日のみらい事務所との打ち合わせは順調だった。'
-entities = [
-    {'name': 'みらい事務所', 'span': [3,9], 'type_id': 1}
-]
 
-encoding = tokenizer.encode_plus_tagged(
-    text, entities, max_length=20
-)
-print(encoding)
-# %%
-encoding = tokenizer.encode_plus_tagged(
-    dataset[0]['text'], dataset[0]['entities'], max_length=512
-)
-print(encoding)
+
 
 # %%
 # データセットの分割
@@ -289,8 +414,7 @@ n_val = int(n*0.2)
 dataset_train = dataset[:n_train]
 dataset_val = dataset[n_train:n_train+n_val]
 dataset_test = dataset[n_train+n_val:]
-# %%
-# 8-15
+
 def create_dataset(tokenizer, dataset, max_length):
     """
     データセットをデータローダに入力できる形に整形。
@@ -306,8 +430,16 @@ def create_dataset(tokenizer, dataset, max_length):
         dataset_for_loader.append(encoding)
     return dataset_for_loader
 
+# %%
+# 8-22
 # トークナイザのロード
-tokenizer = NER_tokenizer.from_pretrained(MODEL_NAME)
+# 固有表現のカテゴリーの数`num_entity_type`を入力に入れる必要がある。
+tokenizer = NER_tokenizer_BIO.from_pretrained(
+    MODEL_NAME,
+    num_entity_type=8 
+)
+
+
 
 # データセットの作成
 max_length = 128
@@ -324,38 +456,15 @@ dataloader_train = DataLoader(
 )
 dataloader_val = DataLoader(dataset_val_for_loader, batch_size=256)
 # %%
-# 8-16
-# PyTorch Lightningのモデル
-class BertForTokenClassification_pl(pl.LightningModule):
-        
-    def __init__(self, model_name, num_labels, lr):
-        super().__init__()
-        self.save_hyperparameters()
-        self.bert_tc = BertForTokenClassification.from_pretrained(
-            model_name,
-            num_labels=num_labels
-        )
-        
-    def training_step(self, batch, batch_idx):
-        output = self.bert_tc(**batch)
-        loss = output.loss
-        self.log('train_loss', loss)
-        return loss
-        
-    def validation_step(self, batch, batch_idx):
-        output = self.bert_tc(**batch)
-        val_loss = output.loss
-        self.log('val_loss', val_loss)
-        
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+# 8-23
 
+# ファインチューニング
 checkpoint = pl.callbacks.ModelCheckpoint(
     monitor='val_loss',
     mode='min',
     save_top_k=1,
     save_weights_only=True,
-    dirpath='model/'
+    dirpath='model_BIO/'
 )
 
 trainer = pl.Trainer(
@@ -364,10 +473,94 @@ trainer = pl.Trainer(
     callbacks=[checkpoint]
 )
 
-# ファインチューニング
+# PyTorch Lightningのモデルのロード
+num_entity_type = 8
+num_labels = 2*num_entity_type+1
 model = BertForTokenClassification_pl(
-    MODEL_NAME, num_labels=9, lr=1e-5
+    MODEL_NAME, num_labels=num_labels, lr=1e-5
 )
+
+
+# %%
+# ファインチューニング
 trainer.fit(model, dataloader_train, dataloader_val)
 best_model_path = checkpoint.best_model_path
+
+# 性能評価
+model = BertForTokenClassification_pl.load_from_checkpoint(
+    best_model_path
+) 
+bert_tc = model.bert_tc.cuda()
+
+entities_list = [] # 正解の固有表現を追加していく
+entities_predicted_list = [] # 抽出された固有表現を追加していく
+for sample in tqdm(dataset_test):
+    text = sample['text']
+    encoding, spans = tokenizer.encode_plus_untagged(
+        text, return_tensors='pt'
+    )
+    encoding = { k: v.cuda() for k, v in encoding.items() } 
+    
+    with torch.no_grad():
+        output = bert_tc(**encoding)
+        scores = output.logits
+        scores = scores[0].cpu().numpy().tolist()
+        
+    # 分類スコアを固有表現に変換する
+    entities_predicted = tokenizer.convert_bert_output_to_entities(
+        text, scores, spans
+    )
+
+    entities_list.append(sample['entities'])
+    entities_predicted_list.append( entities_predicted )
+
+# %%
+# 8-19
+def evaluate_model(entities_list, entities_predicted_list, type_id=None):
+    """
+    正解と予測を比較し、モデルの固有表現抽出の性能を評価する。
+    type_idがNoneのときは、全ての固有表現のタイプに対して評価する。
+    type_idが整数を指定すると、その固有表現のタイプのIDに対して評価を行う。
+    """
+    num_entities = 0 # 固有表現(正解)の個数
+    num_predictions = 0 # BERTにより予測された固有表現の個数
+    num_correct = 0 # BERTにより予測のうち正解であった固有表現の数
+
+    # それぞれの文章で予測と正解を比較。
+    # 予測は文章中の位置とタイプIDが一致すれば正解とみなす。
+    for entities, entities_predicted \
+        in zip(entities_list, entities_predicted_list):
+
+        if type_id:
+            entities = [ e for e in entities if e['type_id'] == type_id ]
+            entities_predicted = [ 
+                e for e in entities_predicted if e['type_id'] == type_id
+            ]
+            
+        get_span_type = lambda e: (e['span'][0], e['span'][1], e['type_id'])
+        set_entities = set( get_span_type(e) for e in entities )
+        set_entities_predicted = \
+            set( get_span_type(e) for e in entities_predicted )
+
+        num_entities += len(entities)
+        num_predictions += len(entities_predicted)
+        num_correct += len( set_entities & set_entities_predicted )
+
+    # 指標を計算
+    precision = num_correct/num_predictions # 適合率
+    recall = num_correct/num_entities # 再現率
+    f_value = 2*precision*recall/(precision+recall) # F値
+
+    result = {
+        'num_entities': num_entities,
+        'num_predictions': num_predictions,
+        'num_correct': num_correct,
+        'precision': precision,
+        'recall': recall,
+        'f_value': f_value
+    }
+
+    return result
+
+print(evaluate_model(entities_list, entities_predicted_list))
 # %%
