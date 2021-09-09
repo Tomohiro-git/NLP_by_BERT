@@ -2,14 +2,7 @@
 # %%
 #import os
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-
-# %%
-import transformers
-
-print(transformers.__version__)
-import pytorch_lightning as pl
-print(pl.__version__)
+#同期用コード
 
 # %%
 import codecs
@@ -41,7 +34,7 @@ def entities_from_xml(file_name):
             for child in elem:#取り出した要素に対して，一つずつ処理する
                 #（タグのないものについても要素として取得されるので，位置(pos)はずれない）
                 text = unicodedata.normalize('NFKC', child.string)#正規化
-                text = text.replace('。', '.')
+                text = text.replace('。', '.')#句点を'.'に統一
                 pos2 += len(text)
                 if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
                     entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
@@ -50,82 +43,40 @@ def entities_from_xml(file_name):
             articles.append("".join(text_list))
             entities.append(entities_article) 
     return articles, entities
-    #return {'text':article.string, 'entities':entities}
-
-# %%
-"""
-import codecs
-from bs4 import BeautifulSoup
-with codecs.open('MedTxt-CR-JA-training.xml', "r", "utf-8") as file:
-    soup = BeautifulSoup(file, "html.parser")
-
-
-
-for elem_articles in soup.find_all("articles"):#articles内のarticleを一つずつ取り出す
-    entities = []
-    articles = []
-    for elem in elem_articles.find_all('article'):#article内の要素を一つずつ取り出す
-        entities_article = []
-        text_list = []
-        pos1 = 0
-        pos2 = 0
-        for child in elem:#取り出した要素に対して，一つずつ処理する
-            #（タグのないものについても要素として取得されるので，位置(pos)はずれない）
-            text = child.string
-            pos2 += len(child.string)
-            if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
-                entities_article.append({'name':child.string, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
-            pos1 = pos2
-            text_list.append(text)
-        articles.append("".join(text_list))
-        entities.append(entities_article) 
-"""
-# %%
-print(re.split(r'.\n', articles[-1]))
 
 # %%
 articles = entities_from_xml('MedTxt-CR-JA-training.xml')[0]
 entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
 
 # %%
+#articleをsentenceにばらす
 import re
 sentences = []
 for s in articles:
     sentences.append(re.split(r'.\n', s))
 
-
 # %%
-
-#len(re.split('[．。]', articles[0])[0])+2
-articles[-1]
-# %%
-# 文単位にばらす
-
+# 文単位にばらしたものに，エンティティを付与し直す
 texts_dataset = []
-entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
 for i in range(len(sentences)):
     pos = 0
     text_dataset = []
     for k in range(len(sentences[i])):
         text_dataset.append({'text': sentences[i][k]})#テキスト追加
         tmp_entities = []
-        while entities[i][0]['span'][1] < len(sentences[i][k]) + pos:#終了位置が超えていたら，次の文へ
+        while entities[i][0]['span'][1] <= len(sentences[i][k]) + pos:#終了位置が超えていたら，次の文へ
             entities[i][0]['span'] = [entities[i][0]['span'][0] - pos,\
                 entities[i][0]['span'][1] - pos]
             tmp_entities.append(entities[i][0])
             del entities[i][0]
             if not entities[i]:#entitiyがなくなったら終わり
                 break
-        text_dataset[k].update({'entities': tmp_entities})
-        
+        text_dataset[k].update({'entities': tmp_entities})        
         if not entities[i]:#entitiyがなくなったら終わり
             break
-        pos += len(sentences[i][k])+2#'.'でスプリットしている場合は+1, 。でスプリットしてたら+2?
-    print(text_dataset)
+        pos += len(sentences[i][k])+2#'\n.'でスプリットしているので+2
     texts_dataset.append(text_dataset)
 
-# %%
-texts_dataset
 # %%
 # ネストをはずす
 dataset_t = []
@@ -136,14 +87,7 @@ dataset_t
 
 # %%
 dataset = dataset_t
-
-# %%
-dataset = []
-for i in range(len(articles)):
-    dataset.append({'text': articles[i],\
-    'entities': entities[i]})
-# %%
-dataset[1]
+dataset
 # %%
 # 8-3
 import itertools
@@ -402,9 +346,6 @@ for sample in dataset:
 # %%
 tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags))
 
-
-
-
 # %%
 # データセットの分割
 random.shuffle(dataset)
@@ -438,8 +379,6 @@ tokenizer = NER_tokenizer_BIO.from_pretrained(
     MODEL_NAME,
     num_entity_type=8 
 )
-
-
 
 # データセットの作成
 max_length = 128
@@ -563,4 +502,8 @@ def evaluate_model(entities_list, entities_predicted_list, type_id=None):
     return result
 
 print(evaluate_model(entities_list, entities_predicted_list))
+# %%
+entities_list
+# %%
+entities_predicted_list
 # %%
