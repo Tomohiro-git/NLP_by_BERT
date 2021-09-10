@@ -5,21 +5,12 @@
 #同期用コード
 
 # %%
-import codecs
-from bs4 import BeautifulSoup
-with codecs.open("MedTxt-CR-JA-training.xml", "r", "utf-8") as file:
-    soup = BeautifulSoup(file, "html.parser")
-
-
-# %%
 
 frequent_tags= ['d', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-val']
 tags_value = [int(i) for i in range(1, len(frequent_tags)+1)]
 dict_tags = dict(zip(frequent_tags, tags_value))
 
 def entities_from_xml(file_name):
-    import codecs
-    from bs4 import BeautifulSoup
     with codecs.open(file_name, "r", "utf-8") as file:
         soup = BeautifulSoup(file, "html.parser")
 
@@ -62,7 +53,8 @@ for i in range(len(sentences)):
     pos = 0
     text_dataset = []
     for k in range(len(sentences[i])):
-        text_dataset.append({'text': sentences[i][k]})#テキスト追加
+        #text_dataset.append({'ID': [i, k]})#IDを追加してみる，元に戻す時用, [何番目のarticleか，何番目のsentenceか]
+        text_dataset[k].update({'text': sentences[i][k]})#テキスト追加
         tmp_entities = []
         while entities[i][0]['span'][1] <= len(sentences[i][k]) + pos:#終了位置が超えていたら，次の文へ
             entities[i][0]['span'] = [entities[i][0]['span'][0] - pos,\
@@ -94,6 +86,7 @@ import itertools
 import random
 import json
 from tqdm import tqdm
+import pandas as pd
 import numpy as np
 import unicodedata
 
@@ -133,19 +126,6 @@ class BertForTokenClassification_pl(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
-checkpoint = pl.callbacks.ModelCheckpoint(
-    monitor='val_loss',
-    mode='min',
-    save_top_k=1,
-    save_weights_only=True,
-    dirpath='model/'
-)
-
-trainer = pl.Trainer(
-    gpus=1,
-    max_epochs=5,
-    callbacks=[checkpoint]
-)
 
 
 # %%
@@ -337,25 +317,54 @@ class NER_tokenizer_BIO(BertJapaneseTokenizer):
                 
         return entities
 
-# %% check
-for sample in dataset:
-    text = sample['text']
-    entities = sample['entities']
 
 
 # %%
 tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags))
 
 # %%
-# データセットの分割
+# データセットの分割(8:2に分割)
+
 random.shuffle(dataset)
 n = len(dataset)
-n_train = int(n*0.6)
-n_val = int(n*0.2)
+n_train = int(n*0.8)
 dataset_train = dataset[:n_train]
-dataset_val = dataset[n_train:n_train+n_val]
-dataset_test = dataset[n_train+n_val:]
+dataset_test = dataset[n_train:]
 
+
+# %%
+dataset
+
+# %%
+
+
+# %%
+#クロスバリデーション
+from sklearn.model_selection import KFold
+
+kf = KFold(n_splits = 5,random_state=42, shuffle = True)
+
+#kFoldで取得できるのはインデックスのみ
+train_kFold_list = []
+test_kFold_list = []
+df_dataset = pd.DataFrame(dataset)# DataFrame挟んだ方がilocで一括指定できるので，dfへ変換する
+for train_index, test_index in kf.split(df_dataset):
+    df_train = df_dataset.iloc[train_index]#ilocでtrainを一括指定
+    df_test = df_dataset.iloc[test_index]
+
+    # データフレームの展開（create_dataset()に合わせる形に変形）
+    train_to_dict = df_train[0].to_dict(orient='list')
+    test_to_dict = df_test[0].to_dict(orient='list')
+
+    train_kFold_list.append(df_train)
+    test_kFold_list.append(df_test)
+# %%
+dataset_train = []
+for text, entities in zip(train_to_dict['text'], train_to_dict['entities']):#text, entitiesをzipして，対応づける形に戻す
+    dataset_train.append({'text': text, 'entities': entities})
+dataset_train
+
+# %%
 def create_dataset(tokenizer, dataset, max_length):
     """
     データセットをデータローダに入力できる形に整形。
@@ -418,13 +427,13 @@ num_labels = 2*num_entity_type+1
 model = BertForTokenClassification_pl(
     MODEL_NAME, num_labels=num_labels, lr=1e-5
 )
-
-
-# %%
 # ファインチューニング
 trainer.fit(model, dataloader_train, dataloader_val)
 best_model_path = checkpoint.best_model_path
 
+
+
+# %%
 # 性能評価
 model = BertForTokenClassification_pl.load_from_checkpoint(
     best_model_path
@@ -433,6 +442,7 @@ bert_tc = model.bert_tc.cuda()
 
 entities_list = [] # 正解の固有表現を追加していく
 entities_predicted_list = [] # 抽出された固有表現を追加していく
+text_entities_predicted = []
 for sample in tqdm(dataset_test):
     text = sample['text']
     encoding, spans = tokenizer.encode_plus_untagged(
@@ -451,7 +461,8 @@ for sample in tqdm(dataset_test):
     )
 
     entities_list.append(sample['entities'])
-    entities_predicted_list.append( entities_predicted )
+    entities_predicted_list.append(entities_predicted)
+    text_entities_predicted.append([text, sample['entities']])
 
 # %%
 # 8-19
@@ -507,3 +518,5 @@ entities_list
 # %%
 entities_predicted_list
 # %%
+text_entities_predicted
+
