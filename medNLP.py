@@ -5,8 +5,12 @@
 #同期用コード
 
 # %%
+import codecs
+from bs4 import BeautifulSoup
+import unicodedata
 
-frequent_tags= ['d', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-val']
+frequent_tags= ['d_positive', 'd_suspicious', 'd_negative', 'd_general', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-val']
+attributes_keys = ['certainty', 'state']
 tags_value = [int(i) for i in range(1, len(frequent_tags)+1)]
 dict_tags = dict(zip(frequent_tags, tags_value))
 
@@ -23,13 +27,21 @@ def entities_from_xml(file_name):
             pos1 = 0
             pos2 = 0
             for child in elem:#取り出した要素に対して，一つずつ処理する
-                #（タグのないものについても要素として取得されるので，位置(pos)はずれない）
+                #（タグのないものについても要素として取得されるので，位置(pos)はずれない）                
                 text = unicodedata.normalize('NFKC', child.string)#正規化
                 text = text.replace('。', '.')#句点を'.'に統一
-                pos2 += len(text)
+                pos2 += len(text)#終了位置を記憶
                 if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
-                    entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[child.name]})
-                pos1 = pos2
+                    print(child.name, child.attrs)
+                    attr = ""
+                    if 'certainty' in child.attrs:
+                        print(child.attrs['certainty'])
+                        attr = child.attrs['certainty']
+                    if 'state' in child.attrs:
+                        print(child.attrs['state'])
+                        attr = child.attrs['state']  
+                    entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[str(child.name)+'_'+str(attr)]})
+                pos1 = pos2#次のentityの開始位置を設定
                 text_list.append(text)
             articles.append("".join(text_list))
             entities.append(entities_article) 
@@ -53,14 +65,14 @@ for i in range(len(sentences)):
     pos = 0
     text_dataset = []
     for k in range(len(sentences[i])):
-        #text_dataset.append({'ID': [i, k]})#IDを追加してみる，元に戻す時用, [何番目のarticleか，何番目のsentenceか]
+        text_dataset.append({'ID': [i, k]})#IDを追加してみる，元に戻す時用, [何番目のarticleか，何番目のsentenceか]
         text_dataset[k].update({'text': sentences[i][k]})#テキスト追加
         tmp_entities = []
         while entities[i][0]['span'][1] <= len(sentences[i][k]) + pos:#終了位置が超えていたら，次の文へ
             entities[i][0]['span'] = [entities[i][0]['span'][0] - pos,\
-                entities[i][0]['span'][1] - pos]
+                entities[i][0]['span'][1] - pos]#span入力
             tmp_entities.append(entities[i][0])
-            del entities[i][0]
+            del entities[i][0]#entity入れたら消していく
             if not entities[i]:#entitiyがなくなったら終わり
                 break
         text_dataset[k].update({'entities': tmp_entities})        
@@ -74,7 +86,6 @@ for i in range(len(sentences)):
 dataset_t = []
 for i in texts_dataset:
     dataset_t.extend(i)
-
 dataset_t
 
 # %%
@@ -95,8 +106,7 @@ from torch.utils.data import DataLoader
 from transformers import BertJapaneseTokenizer, BertForTokenClassification
 import pytorch_lightning as pl
 
-# 日本語学習済みモデル
-MODEL_NAME = 'cl-tohoku/bert-base-japanese-whole-word-masking'
+
 
 
 # %%
@@ -320,49 +330,52 @@ class NER_tokenizer_BIO(BertJapaneseTokenizer):
 
 
 # %%
+# 日本語学習済みモデル
+MODEL_NAME = 'cl-tohoku/bert-base-japanese-whole-word-masking'
 tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags))
 
 # %%
 # データセットの分割(8:2に分割)
-
 random.shuffle(dataset)
 n = len(dataset)
 n_train = int(n*0.8)
 dataset_train = dataset[:n_train]
 dataset_test = dataset[n_train:]
 
-
-# %%
-dataset
-
-# %%
-
-
 # %%
 #クロスバリデーション
+
 from sklearn.model_selection import KFold
 
-kf = KFold(n_splits = 5,random_state=42, shuffle = True)
+def create_dataset_for_CV(dataset, n_splits):
+    kf = KFold(n_splits = n_splits,random_state=42, shuffle = True)
+    #kFoldで取得できるのはインデックスのみ
 
-#kFoldで取得できるのはインデックスのみ
-train_kFold_list = []
-test_kFold_list = []
-df_dataset = pd.DataFrame(dataset)# DataFrame挟んだ方がilocで一括指定できるので，dfへ変換する
-for train_index, test_index in kf.split(df_dataset):
-    df_train = df_dataset.iloc[train_index]#ilocでtrainを一括指定
-    df_test = df_dataset.iloc[test_index]
+    train_kFold_list = []
+    val_kFold_list = []
+    df_dataset = pd.DataFrame(dataset)# DataFrame挟んだ方がilocで一括指定できるので，dfへ変換する
 
-    # データフレームの展開（create_dataset()に合わせる形に変形）
-    train_to_dict = df_train[0].to_dict(orient='list')
-    test_to_dict = df_test[0].to_dict(orient='list')
+    for train_index, val_index in kf.split(df_dataset):
+        df_train = df_dataset.iloc[train_index]#ilocでtrainを一括指定
+        df_val = df_dataset.iloc[val_index]
 
-    train_kFold_list.append(df_train)
-    test_kFold_list.append(df_test)
-# %%
-dataset_train = []
-for text, entities in zip(train_to_dict['text'], train_to_dict['entities']):#text, entitiesをzipして，対応づける形に戻す
-    dataset_train.append({'text': text, 'entities': entities})
-dataset_train
+        # データフレームの展開（create_dataset()に合わせる形に変形）
+        train_to_dict = df_train.to_dict(orient='list')
+        val_to_dict = df_val.to_dict(orient='list')
+
+        dataset_train = []
+        for text, entities in zip(train_to_dict['text'], train_to_dict['entities']):#text, entitiesをzipして，対応づける形に戻す
+            dataset_train.append({'text': text, 'entities': entities})
+        
+        dataset_val = []
+        for text, entities in zip(val_to_dict['text'], val_to_dict['entities']):#text, entitiesをzipして，対応づける形に戻す
+            dataset_val.append({'text': text, 'entities': entities})
+        
+        train_kFold_list.append(dataset_train)#分割分をリストに追加
+        val_kFold_list.append(dataset_val)
+    return train_kFold_list, val_kFold_list
+train_kFold_list, val_kFold_list = create_dataset_for_CV(dataset, 5)
+
 
 # %%
 def create_dataset(tokenizer, dataset, max_length):
@@ -381,68 +394,172 @@ def create_dataset(tokenizer, dataset, max_length):
     return dataset_for_loader
 
 # %%
-# 8-22
-# トークナイザのロード
-# 固有表現のカテゴリーの数`num_entity_type`を入力に入れる必要がある。
-tokenizer = NER_tokenizer_BIO.from_pretrained(
-    MODEL_NAME,
-    num_entity_type=8 
-)
 
-# データセットの作成
-max_length = 128
-dataset_train_for_loader = create_dataset(
-    tokenizer, dataset_train, max_length
-)
-dataset_val_for_loader = create_dataset(
-    tokenizer, dataset_val, max_length
-)
+#クロスバリデーション（k=5）
+for i in range(5):
+    # 8-22
+    # トークナイザのロード
+    # 日本語学習済みモデル
+    MODEL_NAME = 'cl-tohoku/bert-base-japanese-whole-word-masking'
+    # 固有表現のカテゴリーの数`num_entity_type`を入力に入れる必要がある。
+    tokenizer = NER_tokenizer_BIO.from_pretrained(
+        MODEL_NAME,
+        num_entity_type=8 
+    )
 
-# データローダの作成
-dataloader_train = DataLoader(
-    dataset_train_for_loader, batch_size=32, shuffle=True
-)
-dataloader_val = DataLoader(dataset_val_for_loader, batch_size=256)
-# %%
-# 8-23
+    dataset_train = train_kFold_list[i]
+    dataset_val = val_kFold_list[i]
+    # データセットの作成
+    max_length = 128
+    dataset_train_for_loader = create_dataset(
+        tokenizer, dataset_train, max_length
+    )
+    dataset_val_for_loader = create_dataset(
+        tokenizer, dataset_val, max_length
+    )
 
-# ファインチューニング
-checkpoint = pl.callbacks.ModelCheckpoint(
-    monitor='val_loss',
-    mode='min',
-    save_top_k=1,
-    save_weights_only=True,
-    dirpath='model_BIO/'
-)
+    # データローダの作成
+    dataloader_train = DataLoader(
+        dataset_train_for_loader, batch_size=32, shuffle=True
+    )
+    dataloader_val = DataLoader(dataset_val_for_loader, batch_size=256)
 
-trainer = pl.Trainer(
-    gpus=1,
-    max_epochs=5,
-    callbacks=[checkpoint]
-)
+    # 8-23
 
-# PyTorch Lightningのモデルのロード
-num_entity_type = 8
-num_labels = 2*num_entity_type+1
-model = BertForTokenClassification_pl(
-    MODEL_NAME, num_labels=num_labels, lr=1e-5
-)
-# ファインチューニング
-trainer.fit(model, dataloader_train, dataloader_val)
-best_model_path = checkpoint.best_model_path
+    # ファインチューニング
+    checkpoint = pl.callbacks.ModelCheckpoint(
+        monitor='val_loss',
+        mode='min',
+        save_top_k=1,
+        save_weights_only=True,
+        dirpath='model_BIO/'
+    )
+
+    trainer = pl.Trainer(
+        gpus=1,
+        max_epochs=5,
+        callbacks=[checkpoint]
+    )
+
+    # PyTorch Lightningのモデルのロード
+    num_entity_type = 8
+    num_labels = 2*num_entity_type+1
+    model = BertForTokenClassification_pl(
+        MODEL_NAME, num_labels=num_labels, lr=1e-5
+    )
+
+    trainer.fit(model, dataloader_train, dataloader_val)
+    trainer.save_checkpoint(str(i)+".ckpt")
 
 
 
 # %%
 # 性能評価
+
+result = []
+#クロスバリデーション（k=5）
+for i in range(5):
+    model = BertForTokenClassification_pl.load_from_checkpoint(
+        checkpoint_path=str(i)+".ckpt"
+    ) 
+    bert_tc = model.bert_tc.cuda()
+
+    entities_list = [] # 正解の固有表現を追加していく
+    entities_predicted_list = [] # 抽出された固有表現を追加していく
+    text_entities = []
+    for sample in tqdm(dataset_test):
+        text = sample['text']
+        encoding, spans = tokenizer.encode_plus_untagged(
+            text, return_tensors='pt'
+        )
+        encoding = { k: v.cuda() for k, v in encoding.items() } 
+        
+        with torch.no_grad():
+            output = bert_tc(**encoding)
+            scores = output.logits
+            scores = scores[0].cpu().numpy().tolist()
+            
+        # 分類スコアを固有表現に変換する
+        entities_predicted = tokenizer.convert_bert_output_to_entities(
+            text, scores, spans
+        )
+
+        entities_list.append(sample['entities'])
+        entities_predicted_list.append(entities_predicted)
+        text_entities.append({'text': text, 'entities': sample['entities'], 'entities_predicted': entities_predicted})
+
+
+    # 8-19
+    def evaluate_model(entities_list, entities_predicted_list, type_id=None):
+        """
+        正解と予測を比較し、モデルの固有表現抽出の性能を評価する。
+        type_idがNoneのときは、全ての固有表現のタイプに対して評価する。
+        type_idが整数を指定すると、その固有表現のタイプのIDに対して評価を行う。
+        """
+        num_entities = 0 # 固有表現(正解)の個数
+        num_predictions = 0 # BERTにより予測された固有表現の個数
+        num_correct = 0 # BERTにより予測のうち正解であった固有表現の数
+
+        # それぞれの文章で予測と正解を比較。
+        # 予測は文章中の位置とタイプIDが一致すれば正解とみなす。
+        for entities, entities_predicted \
+            in zip(entities_list, entities_predicted_list):
+
+            if type_id:
+                entities = [ e for e in entities if e['type_id'] == type_id ]
+                entities_predicted = [ 
+                    e for e in entities_predicted if e['type_id'] == type_id
+                ]
+                
+            get_span_type = lambda e: (e['span'][0], e['span'][1], e['type_id'])
+            set_entities = set( get_span_type(e) for e in entities )
+            set_entities_predicted = \
+                set( get_span_type(e) for e in entities_predicted )
+
+            num_entities += len(entities)
+            num_predictions += len(entities_predicted)
+            num_correct += len( set_entities & set_entities_predicted )
+
+        # 指標を計算
+        precision = num_correct/num_predictions # 適合率
+        recall = num_correct/num_entities # 再現率
+        f_value = 2*precision*recall/(precision+recall) # F値
+
+        result = {
+            'num_entities': num_entities,
+            'num_predictions': num_predictions,
+            'num_correct': num_correct,
+            'precision': precision,
+            'recall': recall,
+            'f_value': f_value
+        }
+
+        return result
+
+    print(evaluate_model(entities_list, entities_predicted_list))
+    result.append(evaluate_model(entities_list, entities_predicted_list))
+# %%
+precision = [r['precision'] for r in result]
+recall = [r['recall'] for r in result]
+f_value = [r['f_value'] for r in result]
+
+# %%
+print('f_value', f_value)
+print('precision:{}'.format(np.average(precision)))
+print('recall:{}'.format(np.average(recall)))
+print('f_value:{}'.format(np.average(f_value)))
+
+
+# %%
+#1で評価する
 model = BertForTokenClassification_pl.load_from_checkpoint(
-    best_model_path
+    checkpoint_path=str(1)+".ckpt"
 ) 
 bert_tc = model.bert_tc.cuda()
 
 entities_list = [] # 正解の固有表現を追加していく
 entities_predicted_list = [] # 抽出された固有表現を追加していく
-text_entities_predicted = []
+text_entities = []
 for sample in tqdm(dataset_test):
     text = sample['text']
     encoding, spans = tokenizer.encode_plus_untagged(
@@ -462,9 +579,9 @@ for sample in tqdm(dataset_test):
 
     entities_list.append(sample['entities'])
     entities_predicted_list.append(entities_predicted)
-    text_entities_predicted.append([text, sample['entities']])
+    text_entities.append({'text': text, 'entities': sample['entities'], 'entities_predicted': entities_predicted})
 
-# %%
+
 # 8-19
 def evaluate_model(entities_list, entities_predicted_list, type_id=None):
     """
@@ -512,11 +629,29 @@ def evaluate_model(entities_list, entities_predicted_list, type_id=None):
 
     return result
 
-print(evaluate_model(entities_list, entities_predicted_list))
 # %%
-entities_list
+evaluate =[]
+result = []
+for i in range(8):
+    print(evaluate_model(entities_list, entities_predicted_list, type_id=i))
+    evaluate.append(evaluate_model(entities_list, entities_predicted_list, type_id=i))
+    result.append(evaluate_model(entities_list, entities_predicted_list))
 # %%
-entities_predicted_list
+df_eval = pd.DataFrame(evaluate)
 # %%
-text_entities_predicted
+df_eval.insert(0, 'type', dict_tags)
+# %%
+df_eval
 
+# %%
+dict_tags
+
+
+# %%
+text_entities[0:20]
+# %%
+dict_tags
+dict_tags_swap = {v: k for k, v in dict_tags.items()}
+# %%
+dict_tags_swap
+# %%
