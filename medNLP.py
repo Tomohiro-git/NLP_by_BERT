@@ -9,10 +9,13 @@ import codecs
 from bs4 import BeautifulSoup
 import unicodedata
 
-frequent_tags= ['d_positive', 'd_suspicious', 'd_negative', 'd_general', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-val']
+frequent_tags= ['d', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-key', 'm-val']#抽出するタグ
+frequent_tags_attrs= ['d_', 'd_positive', 'd_suspicious', 'd_negative', 'd_general', 'a_',\
+                     'timex3_', 't-test_', 't-test_executed', 't-test_negated', 't-test_other','t-key_', 't-val_',\
+                     'm-key_executed', 'm-key_negated', 'm-key_other', 'm-val_', 'm-val_negated']#エンティティーのリスト
 attributes_keys = ['certainty', 'state']
-tags_value = [int(i) for i in range(1, len(frequent_tags)+1)]
-dict_tags = dict(zip(frequent_tags, tags_value))
+tags_value = [int(i) for i in range(1, len(frequent_tags_attrs)+1)]
+dict_tags = dict(zip(frequent_tags_attrs, tags_value))
 
 def entities_from_xml(file_name):
     with codecs.open(file_name, "r", "utf-8") as file:
@@ -32,15 +35,12 @@ def entities_from_xml(file_name):
                 text = text.replace('。', '.')#句点を'.'に統一
                 pos2 += len(text)#終了位置を記憶
                 if child.name in frequent_tags:#特定のタグについて，固有表現の表現形，位置，タグを取得
-                    print(child.name, child.attrs)
-                    attr = ""
-                    if 'certainty' in child.attrs:
-                        print(child.attrs['certainty'])
+                    attr = ""#属性を入れるため
+                    if 'certainty' in child.attrs:#certaintyがある場合には
                         attr = child.attrs['certainty']
-                    if 'state' in child.attrs:
-                        print(child.attrs['state'])
+                    if 'state' in child.attrs:#stateがある場合には
                         attr = child.attrs['state']  
-                    entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[str(child.name)+'_'+str(attr)]})
+                    entities_article.append({'name':text, 'span':[pos1, pos2], 'type_id':dict_tags[str(child.name)+'_'+str(attr)], 'type':str(child.name)+'_'+str(attr)})
                 pos1 = pos2#次のentityの開始位置を設定
                 text_list.append(text)
             articles.append("".join(text_list))
@@ -50,6 +50,9 @@ def entities_from_xml(file_name):
 # %%
 articles = entities_from_xml('MedTxt-CR-JA-training.xml')[0]
 entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
+
+# %%
+entities
 
 # %%
 #articleをsentenceにばらす
@@ -332,10 +335,11 @@ class NER_tokenizer_BIO(BertJapaneseTokenizer):
 # %%
 # 日本語学習済みモデル
 MODEL_NAME = 'cl-tohoku/bert-base-japanese-whole-word-masking'
-tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags))
+tokenizer = NER_tokenizer_BIO.from_pretrained(MODEL_NAME, num_entity_type=len(frequent_tags_attrs))#Entityの数を変え忘れないように！！
 
 # %%
 # データセットの分割(8:2に分割)
+random.seed(42)
 random.shuffle(dataset)
 n = len(dataset)
 n_train = int(n*0.8)
@@ -404,7 +408,7 @@ for i in range(5):
     # 固有表現のカテゴリーの数`num_entity_type`を入力に入れる必要がある。
     tokenizer = NER_tokenizer_BIO.from_pretrained(
         MODEL_NAME,
-        num_entity_type=8 
+        num_entity_type=len(frequent_tags_attrs) #Entityの数を変え忘れないように！
     )
 
     dataset_train = train_kFold_list[i]
@@ -442,7 +446,7 @@ for i in range(5):
     )
 
     # PyTorch Lightningのモデルのロード
-    num_entity_type = 8
+    num_entity_type = len(frequent_tags_attrs)#entityの数を変え忘れないように！！
     num_labels = 2*num_entity_type+1
     model = BertForTokenClassification_pl(
         MODEL_NAME, num_labels=num_labels, lr=1e-5
@@ -551,9 +555,9 @@ print('f_value:{}'.format(np.average(f_value)))
 
 
 # %%
-#1で評価する
+#5で評価する
 model = BertForTokenClassification_pl.load_from_checkpoint(
-    checkpoint_path=str(1)+".ckpt"
+    checkpoint_path=str(4)+".ckpt"
 ) 
 bert_tc = model.bert_tc.cuda()
 
@@ -581,7 +585,7 @@ for sample in tqdm(dataset_test):
     entities_predicted_list.append(entities_predicted)
     text_entities.append({'text': text, 'entities': sample['entities'], 'entities_predicted': entities_predicted})
 
-
+# %%
 # 8-19
 def evaluate_model(entities_list, entities_predicted_list, type_id=None):
     """
@@ -613,45 +617,44 @@ def evaluate_model(entities_list, entities_predicted_list, type_id=None):
         num_predictions += len(entities_predicted)
         num_correct += len( set_entities & set_entities_predicted )
 
+    precision = 'None'
+    recall = 'None'
+    f_value = 'None'
     # 指標を計算
-    precision = num_correct/num_predictions # 適合率
-    recall = num_correct/num_entities # 再現率
-    f_value = 2*precision*recall/(precision+recall) # F値
+    if num_predictions != 0:
+        precision = num_correct/num_predictions # 適合率
+    if num_entities != 0:
+        recall = num_correct/num_entities # 再現率
+    if num_predictions != 0 and num_entities != 0:
+        f_value = 2*precision*recall/(precision+recall) # F値
 
-    result = {
-        'num_entities': num_entities,
-        'num_predictions': num_predictions,
-        'num_correct': num_correct,
-        'precision': precision,
-        'recall': recall,
-        'f_value': f_value
-    }
+    try:
+        result = {
+            'type_id': type_id,
+           'num_entities': num_entities,
+            'num_predictions': num_predictions,
+            'num_correct': num_correct,
+            'precision': precision,
+            'recall': recall,
+            'f_value': f_value
+        }
+    except:
+        pass
 
     return result
 
 # %%
 evaluate =[]
-result = []
-for i in range(8):
-    print(evaluate_model(entities_list, entities_predicted_list, type_id=i))
+for i in range(1, len(frequent_tags_attrs)+1):
     evaluate.append(evaluate_model(entities_list, entities_predicted_list, type_id=i))
-    result.append(evaluate_model(entities_list, entities_predicted_list))
 # %%
 df_eval = pd.DataFrame(evaluate)
+df_eval
 # %%
 df_eval.insert(0, 'type', dict_tags)
 # %%
 df_eval
 
 # %%
-dict_tags
-
-
-# %%
-text_entities[0:20]
-# %%
-dict_tags
-dict_tags_swap = {v: k for k, v in dict_tags.items()}
-# %%
-dict_tags_swap
+[i['entities'] for i in text_entities]
 # %%
