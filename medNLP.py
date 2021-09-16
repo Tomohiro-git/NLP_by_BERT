@@ -9,7 +9,14 @@ import codecs
 from bs4 import BeautifulSoup
 import unicodedata
 
-frequent_tags= ['d', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-key', 'm-val']#抽出するタグ
+frequent_tags= ['d', 'a', 'timex3', 't-test', 't-key', 't-val', 'm-key', 'm-val']#抽出するタグ
+'''CRのタグ
+frequent_tags_attrs= ['d_', 'd_positive', 'd_suspicious', 'd_negative', 'd_general', 'a_',\
+                     'timex3_', 't-test_', 't-test_executed', 't-test_negated', 't-test_other','t-key_', 't-val_',\
+                     'm-key_executed', 'm-key_negated', 'm-key_other', 'm-val_', 'm-val_negated']#エンティティーのリスト
+'''
+
+
 frequent_tags_attrs= ['d_', 'd_positive', 'd_suspicious', 'd_negative', 'd_general', 'a_',\
                      'timex3_', 't-test_', 't-test_executed', 't-test_negated', 't-test_other','t-key_', 't-val_',\
                      'm-key_executed', 'm-key_negated', 'm-key_other', 'm-val_', 'm-val_negated']#エンティティーのリスト
@@ -47,10 +54,8 @@ def entities_from_xml(file_name):
             entities.append(entities_article) 
     return articles, entities
 
-# %%
-articles = entities_from_xml('MedTxt-CR-JA-training.xml')[0]
-entities = entities_from_xml('MedTxt-CR-JA-training.xml')[1]
-
+# %% ファイル名入力
+articles, entities = entities_from_xml('MedTxt-RR-JA-training.xml')
 # %%
 entities
 
@@ -59,7 +64,7 @@ entities
 import re
 sentences = []
 for s in articles:
-    sentences.append(re.split(r'.\n', s))
+    sentences.append(re.split(r'.\n', s))#多分もっといい分け方がある...一部きちんとわかれない箇所あり
 
 # %%
 # 文単位にばらしたものに，エンティティを付与し直す
@@ -92,7 +97,13 @@ for i in texts_dataset:
 dataset_t
 
 # %%
-dataset = dataset_t
+# textが空のもの削除 
+# 暫定でやっているが，おそらく文単位のばらしがうまくいっていない箇所あり．
+# （本来はsplitのときに使う正規表現を精査するべきだが，影響が小さそうなのでとりあえずこのまま
+dataset = []
+for d in dataset_t:
+    if d['text']!="":
+        dataset.append(d)
 dataset
 # %%
 # 8-3
@@ -270,10 +281,11 @@ class NER_tokenizer_BIO(BertJapaneseTokenizer):
             for j in range(1+num_entity_type, m):
                 if not ( (i == j) or (i+num_entity_type == j) ): 
                     penalty_matrix[i,j] = penalty
-        
         path = [ [i] for i in range(m) ]
         scores_path = scores_bert[0] - penalty_matrix[0,:]
         scores_bert = scores_bert[1:]
+
+        
 
         for scores in scores_bert:
             assert len(scores) == 2*num_entity_type + 1
@@ -378,7 +390,7 @@ def create_dataset_for_CV(dataset, n_splits):
         train_kFold_list.append(dataset_train)#分割分をリストに追加
         val_kFold_list.append(dataset_val)
     return train_kFold_list, val_kFold_list
-train_kFold_list, val_kFold_list = create_dataset_for_CV(dataset, 5)
+train_kFold_list, val_kFold_list = create_dataset_for_CV(dataset_train, 5)
 
 
 # %%
@@ -617,15 +629,15 @@ def evaluate_model(entities_list, entities_predicted_list, type_id=None):
         num_predictions += len(entities_predicted)
         num_correct += len( set_entities & set_entities_predicted )
 
-    precision = 'None'
-    recall = 'None'
-    f_value = 'None'
+    precision = 0
+    recall = 0
+    f_value = 0
     # 指標を計算
     if num_predictions != 0:
         precision = num_correct/num_predictions # 適合率
     if num_entities != 0:
         recall = num_correct/num_entities # 再現率
-    if num_predictions != 0 and num_entities != 0:
+    if precision+recall != 0:
         f_value = 2*precision*recall/(precision+recall) # F値
 
     try:
